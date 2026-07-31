@@ -12,7 +12,7 @@ native dev        # run from the repo
 
 Three delivery paths, all wired:
 
-- **LaunchServices default handler** — `app.zon` declares `file_associations` (`md`, `markdown`, `mdown`, `mkd`; `text/markdown`; Editor role), the packaged Info.plist carries `CFBundleDocumentTypes`, and the LaunchServices default for `net.daringfireball.markdown` is set to `dev.mditor.app` (`scripts/set-default-handler.swift`, or `duti -s dev.mditor.app md all`).
+- **LaunchServices default handler** — `app.zon` declares `file_associations` (`md`, `markdown`, `mdown`, `mkd`; `text/markdown`; Editor role), the packaged Info.plist carries `CFBundleDocumentTypes`, and on first launch the app politely claims itself as the default handler for `net.daringfireball.markdown` (the NSWorkspace `setDefaultApplicationAtURL:toOpenContentType:` path in the host patch): it only takes the role when no default is set, when it is already the default, or when the default is still the pre-rename `dev.native_sdk.markdown_viewer` — an existing default held by another app is never overridden. `scripts/set-default-handler.swift` (or `duti -s dev.mditor.app md all`) remains for manual/dev setups.
 - **Open-document AppleEvent** (the real macOS path) — modern macOS delivers a launch document by `odoc` AppleEvent, never argv. The Native SDK host had no `NSApplicationDelegate`, so this repo ships a small host patch (`scripts/apply-native-sdk-patch.sh`) that forwards `application:openFiles:` into the runtime as `open_files` events; the app maps them to `open_file` messages (`on_open_files` in `main.zig`). Works at cold launch and while the app is already running.
 - **Command-line fallback** — `firstFileArg` in `main.zig` still picks a path out of argv (direct binary launches, older macOS).
 
@@ -23,11 +23,17 @@ After a CLI upgrade the patch must be re-applied (`scripts/apply-native-sdk-patc
 ### Homebrew (recommended)
 
 ```sh
+brew install --cask mditor
+```
+
+Once the cask is merged into [homebrew/cask](https://github.com/Homebrew/homebrew-cask), that one-liner works everywhere. Until then, install from the tap:
+
+```sh
 brew tap mejiasd3v/homebrew-tap
 brew install --cask mditor
 ```
 
-The cask installs `/Applications/MDitor.app`, drops the quarantine attribute (unsigned build), registers it with LaunchServices, and asserts it as the default handler for Markdown documents.
+The cask installs `/Applications/MDitor.app`; the app claims the Markdown default handler itself on first launch. MDitor is unsigned, so on a fresh Mac the first launch may ask you to right-click MDitor → Open (or run `xattr -dr com.apple.quarantine /Applications/MDitor.app`) once — after that, normal launches.
 
 ### From source
 
@@ -77,7 +83,7 @@ Documents cap at 24 KiB (`max_document_bytes` — the view retains editor + prev
 2. `native build && native package --target macos`
 3. Zip the app as `MDitor.zip` (`ditto -c -k --keepParent zig-out/package/mditor.app MDitor.zip` with the bundle renamed to `MDitor.app`).
 4. `gh release create vX.Y.Z MDitor.zip`
-5. Update `Casks/mditor.rb` in the [homebrew-tap](https://github.com/mejiasd3v/homebrew-tap) repo with the new version and `shasum -a 256 MDitor.zip`.
+5. Update `Casks/mditor.rb` in the [homebrew-tap](https://github.com/mejiasd3v/homebrew-tap) repo with the new version and `shasum -a 256 MDitor.zip`, and open the matching update PR against [homebrew/cask](https://github.com/Homebrew/homebrew-cask) (`Casks/m/mditor.rb`) — the same file, no postflight.
 
 ## License
 
