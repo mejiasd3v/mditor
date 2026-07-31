@@ -23,11 +23,10 @@ After a CLI upgrade the patch must be re-applied (`scripts/apply-native-sdk-patc
 ### Homebrew (recommended)
 
 ```sh
-brew tap mejiasd3v/homebrew-tap
-brew install --cask mditor
+brew install --cask https://raw.githubusercontent.com/mejiasd3v/mditor/main/Casks/mditor.rb
 ```
 
-The cask installs `/Applications/MDitor.app`, drops the quarantine attribute (unsigned build), registers it with LaunchServices, and asserts it as the default handler for Markdown documents.
+The cask installs `/Applications/MDitor.app`, drops the quarantine attribute (unsigned build), registers it with LaunchServices, and asserts it as the default handler for Markdown documents. The cask file pins the exact release version and checksum, so `main` is always safe to install from.
 
 ### From source
 
@@ -77,7 +76,7 @@ Documents cap at 24 KiB (`max_document_bytes` — the view retains editor + prev
 2. `native build && native package --target macos`
 3. Zip the app as `MDitor.zip` (`ditto -c -k --keepParent zig-out/package/mditor.app MDitor.zip` with the bundle renamed to `MDitor.app`).
 4. `gh release create vX.Y.Z MDitor.zip`
-5. Update `Casks/mditor.rb` in the [homebrew-tap](https://github.com/mejiasd3v/homebrew-tap) repo with the new version and `shasum -a 256 MDitor.zip`.
+5. Update `Casks/mditor.rb` in this repo with the new version and `shasum -a 256 MDitor.zip`, and ship it in the release commit.
 
 ## License
 
