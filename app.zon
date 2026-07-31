@@ -3,7 +3,7 @@
     .name = "mditor",
     .display_name = "MDitor",
     .description = "A fast, native Markdown editor and viewer for macOS. Opens your .md files.",
-    .version = "0.2.1",
+    .version = "0.3.0",
     .platforms = .{"macos"},
     .icons = .{"assets/icon.png"},
     .permissions = .{ "view", "command" },
@@ -30,7 +30,7 @@
                 // The floor the layout audit sweep proves clean
                 // (sidebar + editor + preview panes): the window stops
                 // resizing here instead of clipping the panes below it.
-                .min_width = 960,
+                .min_width = 1060,
                 .min_height = 560,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",

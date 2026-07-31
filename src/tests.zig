@@ -5,12 +5,12 @@ const main = @import("main.zig");
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const testing = std.testing;
+const font_coverage = @import("font_coverage.zig");
 
 const Model = main.Model;
 const Msg = main.Msg;
 const ViewerUi = main.ViewerUi;
 const ViewerApp = native_sdk.UiApp(Model, Msg);
-const ViewerMarkup = canvas.MarkupView(Model, Msg);
 
 const shell_views = [_]native_sdk.ShellView{
     .{ .label = "viewer-canvas", .kind = .gpu_surface, .fill = true, .gpu_backend = .metal },
@@ -33,7 +33,15 @@ fn viewerOptions() ViewerApp.Options {
         .init_fx = main.boot,
         .tokens_fn = main.viewerTokens,
         .on_appearance = main.onAppearance,
-        .view = main.CompiledViewerView.build,
+        // The same math-mono registration the packaged app uses; a
+        // broken font file fails the harness at init instead of
+        // surfacing as tofu in the real app.
+        .fonts = &.{.{
+            .id = main.math_renderer.math_font_id,
+            .name = main.math_renderer.math_font_name,
+            .ttf = main.math_renderer.math_font_ttf,
+        }},
+        .view = main.appView,
     };
 }
 
@@ -41,13 +49,7 @@ fn viewerOptions() ViewerApp.Options {
 
 fn buildTree(arena: std.mem.Allocator, model: *const Model) !ViewerUi.Tree {
     var ui = ViewerUi.init(arena);
-    return ui.finalize(main.CompiledViewerView.build(&ui, model));
-}
-
-fn interpretTree(arena: std.mem.Allocator, model: *const Model) !ViewerUi.Tree {
-    var view = try ViewerMarkup.init(arena, main.viewer_markup);
-    var ui = ViewerUi.init(arena);
-    return ui.finalize(try view.build(&ui, model));
+    return ui.finalize(main.appView(&ui, model));
 }
 
 fn findByText(widget: canvas.Widget, kind: canvas.WidgetKind, text: []const u8) ?canvas.Widget {
@@ -204,7 +206,7 @@ test "the initial tree renders the welcome sample in editor and preview" {
     try testing.expect(std.mem.startsWith(u8, status.text, prefix));
 }
 
-test "the compiled view and the hot-reload interpreter build the same tree" {
+test "the Zig view builds deterministically across rebuilds" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -212,17 +214,22 @@ test "the compiled view and the hot-reload interpreter build the same tree" {
     var model = main.initialModel();
     model.loadSample(2);
 
-    const compiled = try buildTree(arena, &model);
-    const interpreted = try interpretTree(arena, &model);
+    // The view is pure Zig now (the preview needs the app's extended
+    // markdown renderer, which the markup `<markdown>` element cannot
+    // reach). Two builds of the same model must produce the same tree:
+    // the runtime's retained state (scroll offsets, text edits, focus)
+    // rebases on widget ids, so id instability would lose it.
+    const first = try buildTree(arena, &model);
+    const second = try buildTree(arena, &model);
 
-    var compiled_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
-    defer compiled_ids.deinit(testing.allocator);
-    var interpreted_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
-    defer interpreted_ids.deinit(testing.allocator);
-    try collectIds(compiled.root, &compiled_ids, testing.allocator);
-    try collectIds(interpreted.root, &interpreted_ids, testing.allocator);
-    try testing.expectEqualSlices(canvas.ObjectId, interpreted_ids.items, compiled_ids.items);
-    try testing.expectEqual(interpreted.handlers.len, compiled.handlers.len);
+    var first_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
+    defer first_ids.deinit(testing.allocator);
+    var second_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
+    defer second_ids.deinit(testing.allocator);
+    try collectIds(first.root, &first_ids, testing.allocator);
+    try collectIds(second.root, &second_ids, testing.allocator);
+    try testing.expectEqualSlices(canvas.ObjectId, second_ids.items, first_ids.items);
+    try testing.expectEqual(first.handlers.len, second.handlers.len);
 }
 
 test "editing the textarea updates the preview and derived counts through dispatch" {
@@ -767,6 +774,217 @@ test "firstFileArg picks the first non-flag command-line argument" {
     var long_iterator = std.process.Args.Iterator.init(long);
     const truncated = main.firstFileArg(&long_iterator, &buffer).?;
     try testing.expectEqual(main.max_path_bytes, truncated.len);
+}
+
+// ------------------------------------------- math + mermaid preview
+
+/// Build the preview subtree for a document (everything below the
+/// editor/preview split) and assert a needle lives somewhere in it — the
+/// textarea always holds the whole source, so find by subtree text and
+/// exclude it the same way the snapshot helper does.
+fn previewHasText(arena: std.mem.Allocator, model: *const Model, needle: []const u8) !bool {
+    const tree = try buildTree(arena, model);
+    const editor = findByKind(tree.root, .textarea).?;
+    return subtreeHasTextExcluding(tree.root, editor.id, needle);
+}
+
+fn subtreeHasTextExcluding(widget: canvas.Widget, excluded_id: canvas.ObjectId, needle: []const u8) bool {
+    if (widget.id != excluded_id and std.mem.indexOf(u8, widget.text, needle) != null) return true;
+    for (widget.children) |child| {
+        if (subtreeHasTextExcluding(child, excluded_id, needle)) return true;
+    }
+    return false;
+}
+
+test "inline math renders as a Unicode math span in the preview" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{};
+    model.editor.set("Pythagoras: $x^2 + y^2 = z^2$ and $\\alpha \\le \\beta$, plus $\\frac{1}{2}$ of it.\n");
+    model.active_sample_id = 0;
+
+    // Scripts transliterate to Unicode super/subscript forms (the bundled
+    // math-mono face draws them); symbols map to their glyphs and small
+    // fractions to the single-codepoint vulgar forms.
+    try testing.expect(try previewHasText(arena, &model, "x² + y² = z²"));
+    try testing.expect(try previewHasText(arena, &model, "α ≤ β"));
+    try testing.expect(try previewHasText(arena, &model, "½"));
+
+    // A run with an unmappable script char degrades to ^(...) instead of
+    // inventing a glyph.
+    model.editor.set("$e^{i\\pi}$\n");
+    try testing.expect(try previewHasText(arena, &model, "e^(iπ)"));
+
+    // Money amounts without a closer stay literal.
+    model.editor.set("Price: $10 and $5.\n");
+    try testing.expect(try previewHasText(arena, &model, "Price: $10 and $5."));
+}
+
+test "display math blocks compose widgets" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // A fraction renders its numerator and denominator as separate
+    // widgets (the stack + rule); a root renders the radical glyph.
+    var model = Model{};
+    model.editor.set("$$\n\\frac{a}{b} = \\sqrt{c}$$\n");
+    model.active_sample_id = 0;
+    try testing.expect(try previewHasText(arena, &model, "a"));
+    try testing.expect(try previewHasText(arena, &model, "b"));
+    try testing.expect(try previewHasText(arena, &model, "√"));
+    try testing.expect(try previewHasText(arena, &model, "c"));
+
+    // Single-line display math (`$$x^2$$`) renders the same path: the
+    // script is a separate scaled run next to its base (display math
+    // typesets scripts as small text, unlike inline's Unicode forms).
+    model.editor.set("$$x^2$$\n");
+    try testing.expect(try previewHasText(arena, &model, "x"));
+    try testing.expect(try previewHasText(arena, &model, "2"));
+
+    // An unclosed block degrades to literal text instead of swallowing
+    // the rest of the document.
+    model.editor.set("opening $$ alone\n\nstill here\n");
+    try testing.expect(try previewHasText(arena, &model, "opening $$ alone"));
+    try testing.expect(try previewHasText(arena, &model, "still here"));
+}
+
+test "mermaid flowchart renders nodes, labeled edges, and arrows" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{};
+    model.editor.set("```mermaid\ngraph TD\n  A[Start] --> B{Decision}\n  B -->|yes| C[Continue]\n```\n");
+    model.active_sample_id = 0;
+
+    // Node labels render as panels; the decision shape keeps its text;
+    // the edge label rides the arrow row (the TD arrow points down).
+    try testing.expect(try previewHasText(arena, &model, "Start"));
+    try testing.expect(try previewHasText(arena, &model, "Decision"));
+    try testing.expect(try previewHasText(arena, &model, "Continue"));
+    try testing.expect(try previewHasText(arena, &model, "▼"));
+    try testing.expect(try previewHasText(arena, &model, "yes"));
+
+    // LR direction uses horizontal arrows; `-- text -->` labels work.
+    model.editor.set("```mermaid\nflowchart LR\n  A -- hello --> B\n```\n");
+    try testing.expect(try previewHasText(arena, &model, "▶"));
+    try testing.expect(try previewHasText(arena, &model, "(hello)"));
+
+    // Subgraphs group their members under a bordered title.
+    model.editor.set("```mermaid\ngraph TD\n  subgraph init [Bootstrap]\n    A[Load] --> B[Ready]\n  end\n```\n");
+    try testing.expect(try previewHasText(arena, &model, "Bootstrap"));
+    try testing.expect(try previewHasText(arena, &model, "Load"));
+}
+
+test "mermaid sequence and pie diagrams render" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{};
+    model.editor.set("```mermaid\nsequenceDiagram\n  participant A as Alice\n  participant B as Bob\n  A->>B: Hello Bob\n  B-->>A: Great!\n```\n");
+    model.active_sample_id = 0;
+    try testing.expect(try previewHasText(arena, &model, "Alice"));
+    try testing.expect(try previewHasText(arena, &model, "Bob"));
+    try testing.expect(try previewHasText(arena, &model, "Hello Bob"));
+    try testing.expect(try previewHasText(arena, &model, "▶"));
+    try testing.expect(try previewHasText(arena, &model, "▷"));
+
+    model.editor.set("```mermaid\npie title Pets\n  \"Dogs\" : 4\n  \"Cats\" : 3\n```\n");
+    try testing.expect(try previewHasText(arena, &model, "Pets"));
+    try testing.expect(try previewHasText(arena, &model, "Dogs"));
+    try testing.expect(try previewHasText(arena, &model, "Cats"));
+}
+
+test "unsupported mermaid types degrade to a noted code panel" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{};
+    model.editor.set("```mermaid\ngantt\n  title A Gantt\n```\n");
+    model.active_sample_id = 0;
+    try testing.expect(try previewHasText(arena, &model, "gantt"));
+    try testing.expect(try previewHasText(arena, &model, "isn't a supported diagram type"));
+
+    // Non-mermaid fences keep the plain code panel (no note).
+    model.editor.set("```zig\nconst x = 1;\n```\n");
+    try testing.expect(try previewHasText(arena, &model, "const x = 1;"));
+}
+
+test "the bundled math-mono face covers every glyph the renderers emit" {
+    var glyphs: [512][]const u8 = undefined;
+    const math_glyphs = main.math_renderer.coverageGlyphs(&glyphs);
+    var checked: usize = 0;
+    for (math_glyphs) |glyph| {
+        var it = (try std.unicode.Utf8View.init(glyph)).iterator();
+        while (it.nextCodepoint()) |cp| {
+            try testing.expect(font_coverage.covers(cp));
+            checked += 1;
+        }
+    }
+    // The mermaid vocabulary's arrow and note glyphs.
+    const diagram_glyphs = [_][]const u8{ "▶", "▷", "▼", "▽", "▲", "⇄", "⇅", "—", "|", "×", "⊙", "√" };
+    for (diagram_glyphs) |glyph| {
+        var it = (try std.unicode.Utf8View.init(glyph)).iterator();
+        while (it.nextCodepoint()) |cp| {
+            try testing.expect(font_coverage.covers(cp));
+        }
+    }
+    try testing.expect(checked > 100);
+}
+
+// Env-gated math/mermaid screenshot renderer (skipped by default, never
+// in CI): a document exercising inline + display math and the three
+// mermaid diagram types, rendered OFFSCREEN through the deterministic
+// reference renderer. PNGs land in
+// /tmp/math-shots/mditor-{light,dark}-artifacts/. To use:
+//
+//   MATHSHOTS=1 zig build test
+test "render math and mermaid screenshots (env-gated)" {
+    if (!envGateSet("MATHSHOTS")) return error.SkipZigTest;
+    const io = testing.io;
+
+    var h = try Harness.create();
+    defer h.destroy();
+
+    const doc =
+        "# Math and diagrams\n" ++
+        "Euler: $e^{i\\pi} + 1 = 0$, and $x^2 + y^2 = z^2$.\n" ++
+        "$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n" ++
+        "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n" ++
+        "```mermaid\n" ++
+        "graph TD\n" ++
+        "  A[Start] --> B{Decision}\n" ++
+        "  B -->|yes| C[Continue]\n" ++
+        "  B -->|no| D[Stop]\n" ++
+        "```\n" ++
+        "```mermaid\n" ++
+        "sequenceDiagram\n" ++
+        "  participant A as Alice\n" ++
+        "  participant B as Bob\n" ++
+        "  A->>B: Hello Bob\n" ++
+        "  B-->>A: Great!\n" ++
+        "```\n" ++
+        "```mermaid\n" ++
+        "pie title Pets\n" ++
+        "  \"Dogs\" : 4\n" ++
+        "  \"Cats\" : 3\n" ++
+        "```\n";
+    try h.dispatch(.{ .edit = .clear });
+    try h.dispatch(.{ .edit = .{ .insert_text = doc } });
+    try h.presentFrame(2);
+
+    try h.harness.runtime.dispatchPlatformEvent(h.app, .{ .appearance_changed = .{ .color_scheme = .light } });
+    h.harness.runtime.options.automation = native_sdk.automation.Server.init(io, "/tmp/math-shots/mditor-light-artifacts", "MDitor");
+    try h.harness.runtime.dispatchAutomationCommand(h.app, "screenshot viewer-canvas 2");
+
+    try h.harness.runtime.dispatchPlatformEvent(h.app, .{ .appearance_changed = .{ .color_scheme = .dark } });
+    h.harness.runtime.options.automation = native_sdk.automation.Server.init(io, "/tmp/math-shots/mditor-dark-artifacts", "MDitor");
+    try h.harness.runtime.dispatchAutomationCommand(h.app, "screenshot viewer-canvas 2");
 }
 
 /// Env-gated dump switch. `std.c.getenv` needs libc, which this test

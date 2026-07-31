@@ -8,8 +8,39 @@ Edit anything on the left and watch this pane keep up keystroke for keystroke.
 - **Inline styles** — bold, *italic*, `inline code`, ~~strikethrough~~, and [real links](https://ziglang.org) with a pointer cursor
 - **Tables** with per-column alignment (see below)
 - **Task lists**, fenced code blocks, and `> blockquotes`
-- Collapsible `<details>` sections whose state lives in the app model, not the renderer
+- **Collapsible `<details>` sections** whose state lives in the app model, not the renderer
+- **LaTeX math** — inline $x^2 + y^2 = z^2$ and display blocks with real fractions and roots
+- **Mermaid diagrams** — flowcharts, sequence diagrams, and pie charts from fenced blocks
 - Bare URLs autolink too: https://github.com
+
+## Math
+
+Inline math runs in the text: $E = mc^2$, or $\alpha + \beta \le \gamma$. Display math composes real widgets — a fraction is a stacked numerator and denominator over a rule:
+
+$$
+\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+$$
+
+$$
+\sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+$$
+
+## Diagrams
+
+```mermaid
+graph TD
+  A[Write markdown] --> B{LaTeX or mermaid?}
+  B -->|LaTeX| C[Math widgets]
+  B -->|mermaid| D[Diagram widgets]
+```
+
+```mermaid
+sequenceDiagram
+  participant You
+  participant MDitor
+  You->>MDitor: Type in the editor
+  MDitor-->>You: Preview tracks keystrokes
+```
 
 ## Toolbar reference
 

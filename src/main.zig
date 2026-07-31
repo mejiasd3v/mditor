@@ -1,10 +1,11 @@
-//! MDitor: a split-pane markdown editor/preview authored in
-//! markup + Zig.
+//! MDitor: a split-pane markdown editor/preview authored in Zig.
 //!
 //! The left pane is a `textarea` whose every edit mirrors into the model
-//! (`canvas.TextBuffer`, the elm-style pattern); the right pane is one
-//! `<markdown>` element bound to the same bytes, so the preview is always
-//! exactly the document — no debounce, no cache, no drift. Links open in
+//! (`canvas.TextBuffer`, the elm-style pattern); the right pane renders
+//! the same bytes through the app's extended markdown engine
+//! (`markdown.zig`: the SDK's GFM subset vendored and extended with LaTeX
+//! math and Mermaid diagrams), so the preview is always exactly the
+//! document — no debounce, no cache, no drift. Links open in
 //! the system browser through `fx.spawn` (`open`/`xdg-open`), and Open /
 //! Save / Save As are real file I/O through `fx.readFile`/`fx.writeFile`
 //! against an honest, editable path field — native-sdk has no native
@@ -15,13 +16,17 @@
 //! Fixed capacities, documented where they bind: documents cap at
 //! `max_document_bytes` (24 KiB — the view retains editor + preview text
 //! against the 64 KiB per-view widget-text budget), paths at
-//! `max_path_bytes`, the recent list at `max_recent` entries, and
-//! `<details>` blocks at `max_details` model-owned expansion flags.
+//! `max_path_bytes`, the recent list at `max_recent` entries, `<details>`
+//! blocks at `max_details` model-owned expansion flags, and the preview's
+//! LaTeX/mermaid renderers at their own module bounds (see math.zig and
+//! mermaid.zig).
 
 const std = @import("std");
 const builtin = @import("builtin");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
+pub const math_renderer = @import("math.zig");
+const markdown_renderer = @import("markdown.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -35,8 +40,11 @@ const window_height: f32 = 800;
 /// Content min-size floor the window enforces: the smallest size where
 /// the sidebar, editor, and preview lay out without clipping or overlap —
 /// proven by the layout audit sweep in tests.zig, which sweeps from
-/// exactly this floor.
-pub const window_min_width: f32 = 960;
+/// exactly this floor. Diagrams and display math are fixed-width content
+/// (their rows cannot wrap), so the floor sits above the widest diagram
+/// row the bundled welcome sample renders at the sweep's maximum text
+/// expansion.
+pub const window_min_width: f32 = 1060;
 pub const window_min_height: f32 = 560;
 /// The toolbar's natural height (28px controls + 2x10 padding): the
 /// floor `toolbar_height` falls back to when no titlebar band overlays
@@ -82,7 +90,7 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
     // threads it through the STARTUP window create): the toolbar row is
     // toolbar-height, so the TALL band centers the traffic lights
     // against it (the Notes look) instead of parking them high. The
-    // toolbar is the drag region (`window-drag` in viewer.native), pads
+    // toolbar is the drag region (`window_drag` in the view), pads
     // its leading edge by the chrome insets `on_chrome` delivers, and
     // matches its height to the band so its controls and the lights
     // share a centerline.
@@ -419,7 +427,7 @@ pub const Msg = union(enum) {
     link_done: native_sdk.EffectExit,
 };
 
-const ViewerApp = native_sdk.UiAppWithFeatures(Model, Msg, .{ .runtime_markup = dev_markup_reload });
+const ViewerApp = native_sdk.UiAppWithFeatures(Model, Msg, .{ .runtime_markup = false });
 pub const Effects = ViewerApp.Effects;
 
 /// TEA init: open a command-line file first, then restore the persisted
@@ -600,6 +608,10 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
 pub fn viewerTokens(model: *const Model) canvas.DesignTokens {
     const scheme = model.system_scheme;
     var tokens = canvas.DesignTokens.theme(.{ .color_scheme = scheme });
+    // Mono runs — fenced code, inline code, and math spans — draw with
+    // the registered math-mono face (JuliaMono subset) so Greek, scripts,
+    // and symbols render real glyphs everywhere, deterministically.
+    tokens.typography.mono_font_id = math_renderer.math_font_id;
     tokens.colors = switch (scheme) {
         .light => .{
             .background = canvas.Color.rgb8(250, 250, 249),
@@ -667,17 +679,217 @@ pub fn onChrome(chrome: native_sdk.WindowChrome) ?Msg {
 // ------------------------------------------------------------------- view
 
 pub const ViewerUi = canvas.Ui(Msg);
-pub const viewer_markup = @embedFile("viewer.native");
 
-/// The comptime-compiled engine: same tree, ids, and handlers as the
-/// interpreter, no parser in the binary.
-pub const CompiledViewerView = canvas.CompiledMarkupView(Model, Msg, viewer_markup);
+/// The whole window as a Zig-built view (the preview pane needs the
+/// app's extended markdown renderer, which the markup `<markdown>`
+/// element cannot reach): toolbar, sidebar library/recent lists, split
+/// editor/preview, status bar. The chrome mirrors the previous
+/// viewer.native tree one-to-one — same widgets, same labels, same
+/// handlers — so the automation, layout-audit, and a11y-audit tests pin
+/// the same surface.
+pub fn appView(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    return ui.column(.{ .style_tokens = .{ .background = .background } }, .{
+        toolbar(ui, model),
+        ui.separator(.{}),
+        body(ui, model),
+        ui.statusBar(.{}, model.statusLine(ui.arena)),
+    });
+}
 
-// -------------------------------------------------------------------- app
+fn appendNode(ui: *ViewerUi, list: *std.ArrayListUnmanaged(ViewerUi.Node), node: ViewerUi.Node) void {
+    list.append(ui.arena, node) catch {
+        ui.failed = true;
+    };
+}
 
-/// Debug builds keep the runtime markup engine for hot reload; release
-/// builds compile it out entirely.
-const dev_markup_reload = builtin.mode == .Debug;
+/// The toolbar IS the titlebar (tall hidden-inset chrome): window-drag
+/// makes its background move the window — the buttons inside stay
+/// buttons, a double-click zooms — the leading spacer pads past the
+/// traffic lights by the live chrome inset the model receives via
+/// `on_chrome`, and the row matches its height to the tall titlebar
+/// band so cross-centering puts its controls on the traffic lights'
+/// centerline (both fall back — zero inset, natural height — in
+/// fullscreen, so the toolbar reclaims the space).
+fn toolbar(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    var children = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+    defer children.deinit(ui.arena);
+
+    appendNode(ui, &children, ui.el(.stack, .{ .width = model.chrome_leading }, .{}));
+
+    // The sample picker: a REAL select — the trigger shows the current
+    // document, and the options are an anchored dropdown that floats
+    // over the toolbar's siblings. Open state is the model's;
+    // Escape/click-outside dismiss through on_dismiss, picking closes
+    // in update.
+    var picker = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+    defer picker.deinit(ui.arena);
+    appendNode(ui, &picker, ui.el(.select, .{
+        .size = .sm,
+        .width = 176,
+        .text = model.docTitle(),
+        .on_press = .toggle_sample_picker,
+        .semantics = .{ .label = "Sample picker" },
+    }, .{}));
+    if (model.sample_picker_open) {
+        var items = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+        defer items.deinit(ui.arena);
+        for (&Model.samples) |*sample| {
+            appendNode(ui, &items, ui.el(.menu_item, .{
+                .text = sample.title,
+                .on_press = .{ .load_sample = sample.id },
+                .selected = sample.id == model.active_sample_id,
+            }, .{}));
+        }
+        appendNode(ui, &picker, ui.el(.dropdown_menu, .{
+            .anchor = .below,
+            .anchor_alignment = .stretch,
+            .on_dismiss = .close_sample_picker,
+            .semantics = .{ .label = "Samples" },
+        }, items.items));
+    }
+    appendNode(ui, &children, ui.stack(.{}, picker.items));
+    appendNode(ui, &children, ui.el(.stack, .{ .width = 16 }, .{}));
+
+    // One size register per row: every toolbar control is sm, so the
+    // row renders one control height.
+    appendNode(ui, &children, ui.el(.text_field, .{
+        .size = .sm,
+        .text = model.path(),
+        .placeholder = "/path/to/document.md",
+        .on_input = ViewerUi.inputMsg(.edit_path),
+        .on_submit = .open_doc,
+        .grow = 1,
+        .semantics = .{ .label = "Document path" },
+    }, .{}));
+    // Inline button icons: icon + label are one widget, so the icon
+    // follows the disabled tint (Save greys out whole while unsaved
+    // paths make it unavailable).
+    appendNode(ui, &children, ui.button(.{
+        .size = .sm,
+        .variant = .outline,
+        .icon = "folder-open",
+        .on_press = .open_doc,
+        .disabled = model.pathEmpty(),
+    }, "Open"));
+    appendNode(ui, &children, ui.button(.{
+        .size = .sm,
+        .variant = .outline,
+        .icon = "save",
+        .on_press = .save_doc,
+        .disabled = model.cannotSave(),
+    }, "Save"));
+    appendNode(ui, &children, ui.button(.{
+        .size = .sm,
+        .variant = .outline,
+        .on_press = .save_as,
+        .disabled = model.pathEmpty(),
+    }, "Save As"));
+    appendNode(ui, &children, ui.el(.stack, .{ .width = model.chrome_trailing }, .{}));
+
+    return ui.row(.{
+        .gap = 8,
+        .padding = 10,
+        .height = model.toolbar_height,
+        .cross = .center,
+        .window_drag = true,
+        .style_tokens = .{ .background = .surface },
+        .semantics = .{ .label = "Toolbar" },
+    }, children.items);
+}
+
+fn sidebar(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    var children = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+    defer children.deinit(ui.arena);
+
+    appendNode(ui, &children, ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Library"));
+    var sample_items = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+    defer sample_items.deinit(ui.arena);
+    for (&Model.samples) |*sample| {
+        appendNode(ui, &sample_items, ui.el(.list_item, .{
+            .text = sample.title,
+            .on_press = .{ .load_sample = sample.id },
+            .selected = sample.id == model.active_sample_id,
+        }, .{}));
+    }
+    appendNode(ui, &children, ui.column(.{ .gap = 2 }, sample_items.items));
+    appendNode(ui, &children, ui.el(.stack, .{ .height = 6 }, .{}));
+    appendNode(ui, &children, ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Recent"));
+    if (model.recent_count == 0) {
+        appendNode(ui, &children, ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Nothing opened yet"));
+    } else {
+        var recent_items = std.ArrayListUnmanaged(ViewerUi.Node).empty;
+        defer recent_items.deinit(ui.arena);
+        for (model.recentDocs(ui.arena)) |recent| {
+            appendNode(ui, &recent_items, ui.el(.list_item, .{
+                .text = recent.name,
+                .on_press = .{ .open_recent = recent.index },
+                .selected = recent.selected,
+                .semantics = .{ .label = recent.path },
+            }, .{}));
+        }
+        appendNode(ui, &children, ui.column(.{ .gap = 2 }, recent_items.items));
+    }
+    appendNode(ui, &children, ui.spacer(1));
+
+    return ui.column(.{
+        .width = 216,
+        .gap = 8,
+        .padding = 10,
+        .style_tokens = .{ .background = .surface },
+    }, children.items);
+}
+
+fn editorPane(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    return ui.column(.{ .grow = 1, .padding = 10, .gap = 6 }, .{
+        ui.row(.{ .gap = 6, .cross = .center }, .{
+            ui.icon(.{ .width = 13, .height = 13, .style_tokens = .{ .foreground = .text_muted } }, "edit"),
+            ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Editor"),
+        }),
+        ui.el(.textarea, .{
+            .text = model.document(),
+            .on_input = ViewerUi.inputMsg(.edit),
+            .grow = 1,
+            .placeholder = "# Start writing…",
+            .semantics = .{ .label = "Markdown source" },
+        }, .{}),
+    });
+}
+
+fn previewPane(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    const Md = markdown_renderer.Markdown(Msg);
+    return ui.column(.{ .grow = 1 }, .{
+        ui.row(.{ .padding = 10, .cross = .center }, .{
+            ui.text(.{ .style_tokens = .{ .foreground = .text_muted }, .grow = 1 }, "Preview"),
+        }),
+        // Controlled scroll: the model owns the offset — on-scroll stores
+        // the applied value, the binding echoes it back, so the preview
+        // keeps its place across every rebuild.
+        ui.scroll(.{
+            .grow = 1,
+            .value = model.doc_scroll,
+            .on_scroll = ViewerUi.scrollMsg(.doc_scrolled),
+            .semantics = .{ .label = "Preview" },
+        }, .{
+            ui.column(.{ .padding = 24 }, .{
+                Md.view(ui, model.document(), .{
+                    .on_link = ViewerUi.linkMsg(.open_url),
+                    .on_details = Md.detailsMsg(.toggle_details),
+                    .details_expanded = &model.details_expanded,
+                }),
+            }),
+        }),
+    });
+}
+
+fn body(ui: *ViewerUi, model: *const Model) ViewerUi.Node {
+    return ui.row(.{ .grow = 1 }, .{
+        sidebar(ui, model),
+        ui.separator(.{}),
+        editorPane(ui, model),
+        ui.separator(.{}),
+        previewPane(ui, model),
+    });
+}
 
 pub fn initialModel() Model {
     var model = Model{};
@@ -722,11 +934,17 @@ pub fn main(init: std.process.Init) !void {
         .on_appearance = onAppearance,
         .on_open_files = onOpenFiles,
         .on_chrome = onChrome,
-        .view = CompiledViewerView.build,
-        .markup = if (dev_markup_reload)
-            .{ .source = viewer_markup, .watch_path = "src/viewer.native", .io = init.io }
-        else
-            null,
+        // The math-mono face: a JuliaMono subset (SIL OFL 1.1, see
+        // src/fonts/OFL.txt) that covers the Greek, script, and symbol
+        // glyphs the stock sans face lacks. Registered before the first
+        // view build and referenced from the tokens' mono slot, so math
+        // spans and code fences share one face with real glyphs.
+        .fonts = &.{.{
+            .id = math_renderer.math_font_id,
+            .name = math_renderer.math_font_name,
+            .ttf = math_renderer.math_font_ttf,
+        }},
+        .view = appView,
     });
     defer app_state.deinit();
     try runner.runWithOptions(app_state.app(), .{
