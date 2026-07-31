@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# Zig / native-sdk build artifacts
+.zig-cache/
+zig-out/
+.native/
