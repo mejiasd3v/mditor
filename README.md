@@ -18,7 +18,18 @@ Three delivery paths, all wired:
 
 After a CLI upgrade the patch must be re-applied (`scripts/apply-native-sdk-patch.sh`), then rebuild and reinstall (below).
 
-## Install / reinstall
+## Install
+
+### Homebrew (recommended)
+
+```sh
+brew tap mejiasd3v/homebrew-mditor
+brew install --cask mditor
+```
+
+The cask installs `/Applications/MDitor.app`, drops the quarantine attribute (unsigned build), registers it with LaunchServices, and asserts it as the default handler for Markdown documents.
+
+### From source
 
 ```sh
 native build                 # ReleaseFast
@@ -59,6 +70,14 @@ Documents cap at 24 KiB (`max_document_bytes` — the view retains editor + prev
 `native test` drives the real dispatch paths: open/save/save-as round-trips and recent-list persistence through the fake effect executor, the open-document AppleEvent mapping (`on_open_files`), command-line file arguments (`firstFileArg`), link clicks spawning the browser command, details toggling via automation `widget-click`, editor edits updating the preview and derived counts, the system appearance re-deriving the tokens live through platform events, the controlled preview scroll round-trip, compiled/interpreter markup parity, and automation snapshot assertions over links, table cells, and task checkboxes.
 
 > Note: the SDK's canvas text editing dropped undo/redo and vertical caret moves in 0.4.0; the tests cover the current contract (compound select+replace edits, home/end moves) through the real platform-event path.
+
+## Releasing
+
+1. Bump `.version` in `app.zon`.
+2. `native build && native package --target macos`
+3. Zip the app as `MDitor.zip` (`ditto -c -k --keepParent zig-out/package/mditor.app MDitor.zip` with the bundle renamed to `MDitor.app`).
+4. `gh release create vX.Y.Z MDitor.zip`
+5. Update `Casks/mditor.rb` in the [homebrew-mditor](https://github.com/mejiasd3v/homebrew-mditor) tap with the new version and `shasum -a 256 MDitor.zip`.
 
 ## License
 
