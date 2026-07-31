@@ -948,6 +948,7 @@ static BOOL NativeSdkDeclaresMarkdownDocuments(void) {
 }
 static void NativeSdkClaimMarkdownDefaultHandler(void) {
     const BOOL trace = getenv("NATIVE_SDK_DEFAULT_HANDLER_TRACE") != NULL;
+    if (trace) fprintf(stderr, "native-sdk: markdown claim: didFinishLaunching\n");
     if (!NativeSdkDeclaresMarkdownDocuments()) {
         if (trace) fprintf(stderr, "native-sdk: markdown claim: no markdown documents declared\n");
         return;
@@ -1002,8 +1003,9 @@ static void NativeSdkClaimMarkdownDefaultHandler(void) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    if (getenv("NATIVE_SDK_DEFAULT_HANDLER_TRACE")) fprintf(stderr, "native-sdk: markdown claim: didFinishLaunching\n");
-    NativeSdkClaimMarkdownDefaultHandler();
+    if (@available(macOS 12.0, *)) {
+        NativeSdkClaimMarkdownDefaultHandler();
+    }
 }
 
 - (void)emitPaths:(NSArray<NSString *> *)paths {

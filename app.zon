@@ -3,7 +3,7 @@
     .name = "mditor",
     .display_name = "MDitor",
     .description = "A fast, native Markdown editor and viewer for macOS. Opens your .md files.",
-    .version = "0.2.0",
+    .version = "0.2.1",
     .platforms = .{"macos"},
     .icons = .{"assets/icon.png"},
     .permissions = .{ "view", "command" },
