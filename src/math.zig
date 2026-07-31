@@ -821,7 +821,13 @@ pub fn Math(comptime Msg: type) type {
                 if (std.mem.eql(u8, name, "frac")) {
                     const numerator = self.parseGroup() orelse return .{ .kind = .span, .text = name };
                     const denominator = self.parseGroup() orelse return .{ .kind = .span, .text = name };
-                    return .{ .kind = .frac, .children = &.{ numerator, denominator } };
+                    // Children must live in the arena, never on this
+                    // stack frame (ReleaseFast reuses the frame after
+                    // return).
+                    const parts = self.allocChildren(2);
+                    parts[0] = numerator;
+                    parts[1] = denominator;
+                    return .{ .kind = .frac, .children = parts };
                 }
                 if (std.mem.eql(u8, name, "sqrt")) {
                     var root: []const u8 = "";
@@ -831,14 +837,18 @@ pub fn Math(comptime Msg: type) type {
                         self.index = @min(close + 1, self.src.len);
                     }
                     const content = self.parseGroup() orelse return .{ .kind = .span, .text = name };
-                    return .{ .kind = .sqrt, .children = &.{content}, .root = root };
+                    const parts = self.allocChildren(1);
+                    parts[0] = content;
+                    return .{ .kind = .sqrt, .children = parts, .root = root };
                 }
                 if (std.mem.eql(u8, name, "text") or std.mem.eql(u8, name, "textrm") or
                     std.mem.eql(u8, name, "mathrm") or std.mem.eql(u8, name, "mathbf") or
                     std.mem.eql(u8, name, "mathit") or std.mem.eql(u8, name, "operatorname"))
                 {
                     const content = self.parseGroup() orelse return .{ .kind = .span, .text = name };
-                    return .{ .kind = .text, .children = &.{content} };
+                    const parts = self.allocChildren(1);
+                    parts[0] = content;
+                    return .{ .kind = .text, .children = parts };
                 }
                 if (std.mem.eql(u8, name, "begin")) return self.parseEnvironment();
                 // Unknown command: keep its name.
@@ -933,9 +943,11 @@ pub fn Math(comptime Msg: type) type {
                     }
                 }
                 if (sup == null and sub == null) return atom;
+                const parts = self.allocChildren(1);
+                parts[0] = atom;
                 return .{
                     .kind = .script,
-                    .children = &.{atom},
+                    .children = parts,
                     .sup = sup,
                     .sub = sub,
                 };
