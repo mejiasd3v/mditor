@@ -23,17 +23,13 @@ After a CLI upgrade the patch must be re-applied (`scripts/apply-native-sdk-patc
 ### Homebrew (recommended)
 
 ```sh
-brew install --cask mditor
-```
-
-Once the cask is merged into [homebrew/cask](https://github.com/Homebrew/homebrew-cask), that one-liner works everywhere. Until then, install from the tap:
-
-```sh
 brew tap mejiasd3v/homebrew-tap
 brew install --cask mditor
 ```
 
-The cask installs `/Applications/MDitor.app`; the app claims the Markdown default handler itself on first launch. MDitor is unsigned, so on a fresh Mac the first launch may ask you to right-click MDitor → Open (or run `xattr -dr com.apple.quarantine /Applications/MDitor.app`) once — after that, normal launches.
+The cask installs `/Applications/MDitor.app`; the app claims the Markdown default handler itself on first launch. The official [homebrew/cask](https://github.com/Homebrew/homebrew-cask) tap requires every app to be signed and notarized by Apple, and the repo to meet notability thresholds — until MDitor has a Developer ID signature (and the repo has some mileage), it ships from the personal tap. The cask file is staged on the `mditor-cask` branch of [mejiasd3v/homebrew-cask](https://github.com/mejiasd3v/homebrew-cask/tree/mditor-cask) ready for the PR once those requirements are met.
+
+MDitor is unsigned, so on a fresh Mac the first launch may ask you to right-click MDitor → Open (or run `xattr -dr com.apple.quarantine /Applications/MDitor.app`) once — after that, normal launches.
 
 ### From source
 
@@ -83,7 +79,7 @@ Documents cap at 24 KiB (`max_document_bytes` — the view retains editor + prev
 2. `native build && native package --target macos`
 3. Zip the app as `MDitor.zip` (`ditto -c -k --keepParent zig-out/package/mditor.app MDitor.zip` with the bundle renamed to `MDitor.app`).
 4. `gh release create vX.Y.Z MDitor.zip`
-5. Update `Casks/mditor.rb` in the [homebrew-tap](https://github.com/mejiasd3v/homebrew-tap) repo with the new version and `shasum -a 256 MDitor.zip`, and open the matching update PR against [homebrew/cask](https://github.com/Homebrew/homebrew-cask) (`Casks/m/mditor.rb`) — the same file, no postflight.
+5. Update `Casks/mditor.rb` in the [homebrew-tap](https://github.com/mejiasd3v/homebrew-tap) repo with the new version and `shasum -a 256 MDitor.zip`. When the app is Developer ID signed/notarized and the repo meets homebrew/cask's notability thresholds, also open the matching PR against [homebrew/cask](https://github.com/Homebrew/homebrew-cask) (`Casks/m/mditor.rb` — the same file, no postflight; the branch is already staged on [mejiasd3v/homebrew-cask](https://github.com/mejiasd3v/homebrew-cask/tree/mditor-cask)).
 
 ## License
 
