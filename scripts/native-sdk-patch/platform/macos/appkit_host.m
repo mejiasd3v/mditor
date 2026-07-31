@@ -924,6 +924,68 @@ static void NativeSdkEmitGpuSurfaceResizes(NSView *view) {
     }
 }
 
+/* Markdown default-handler claim (host patch v2). Runs once at launch
+ * and politely claims the Markdown document types for the app: the
+ * effective default (NSWorkspace resolves it, including role bindings
+ * written by modern APIs) is only replaced when it is unset, already
+ * this app, or still the pre-rename identity
+ * (dev.native_sdk.markdown_viewer) of the app that ships this patch.
+ * A default held by any other app — user-chosen or another installed
+ * editor — is never overridden. Gated on the bundle actually declaring
+ * Markdown documents, so other apps built with a patched CLI are never
+ * touched. Uses the non-deprecated NSWorkspace/UTType pair; the legacy
+ * LSSetDefaultRoleHandlerForContentType silently no-ops on modern
+ * macOS for bundles without the type's role binding. */
+static BOOL NativeSdkDeclaresMarkdownDocuments(void) {
+    NSArray *docTypes = [NSBundle mainBundle].infoDictionary[@"CFBundleDocumentTypes"];
+    for (NSDictionary *type in docTypes ?: @[]) {
+        NSArray *extensions = type[@"CFBundleTypeExtensions"] ?: @[];
+        for (NSString *extension in extensions) {
+            if ([extension caseInsensitiveCompare:@"md"] == NSOrderedSame) return YES;
+        }
+    }
+    return NO;
+}
+static void NativeSdkClaimMarkdownDefaultHandler(void) {
+    const BOOL trace = getenv("NATIVE_SDK_DEFAULT_HANDLER_TRACE") != NULL;
+    if (!NativeSdkDeclaresMarkdownDocuments()) {
+        if (trace) fprintf(stderr, "native-sdk: markdown claim: no markdown documents declared\n");
+        return;
+    }
+    NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
+    NSBundle *mainBundle = NSBundle.mainBundle;
+    NSURL *appURL = mainBundle.bundleURL;
+    NSString *bundleID = mainBundle.bundleIdentifier;
+    if (!appURL || bundleID.length == 0) {
+        if (trace) fprintf(stderr, "native-sdk: markdown claim: no bundle url/id\n");
+        return;
+    }
+    if (trace) fprintf(stderr, "native-sdk: markdown claim: app=%s id=%s\n", appURL.path.UTF8String, bundleID.UTF8String);
+    NSMutableArray<UTType *> *types = [NSMutableArray array];
+    UTType *markdownType = [UTType typeWithIdentifier:@"net.daringfireball.markdown"];
+    if (markdownType) [types addObject:markdownType];
+    UTType *publicMarkdownType = [UTType typeWithIdentifier:@"public.markdown"];
+    if (publicMarkdownType) [types addObject:publicMarkdownType];
+    for (UTType *type in types) {
+        NSURL *current = [workspace URLForApplicationToOpenContentType:type];
+        NSString *currentID = nil;
+        if (current) {
+            currentID = [NSBundle bundleWithURL:current].bundleIdentifier ?: current.lastPathComponent.stringByDeletingPathExtension;
+        }
+        BOOL keep = currentID.length > 0 && ![currentID isEqualToString:bundleID] && ![currentID isEqualToString:@"dev.native_sdk.markdown_viewer"];
+        if (trace) {
+            fprintf(stderr, "native-sdk: markdown default handler: type=%s current=%s %s\n",
+                type.identifier.UTF8String, currentID ? currentID.UTF8String : "none", keep ? "keep" : "claim");
+        }
+        if (keep) continue;
+        [workspace setDefaultApplicationAtURL:appURL
+                             toOpenContentType:type
+                            completionHandler:^(NSError *error) {
+            if (error) NSLog(@"MDitor: could not claim default handler for %@: %@", type.identifier, error);
+        }];
+    }
+}
+
 @implementation NativeSdkAppDelegate
 
 - (void)application:(NSApplication *)application openFiles:(NSArray<NSString *> *)filenames {
@@ -936,6 +998,12 @@ static void NativeSdkEmitGpuSurfaceResizes(NSView *view) {
     if (filename.length == 0) return NO;
     [self emitPaths:@[filename]];
     return YES;
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    (void)notification;
+    if (getenv("NATIVE_SDK_DEFAULT_HANDLER_TRACE")) fprintf(stderr, "native-sdk: markdown claim: didFinishLaunching\n");
+    NativeSdkClaimMarkdownDefaultHandler();
 }
 
 - (void)emitPaths:(NSArray<NSString *> *)paths {

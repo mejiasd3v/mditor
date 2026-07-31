@@ -23,7 +23,11 @@ if [ ! -f "$CLI/package.json" ]; then
 fi
 
 marker="Open-document AppleEvent"
-if grep -q "$marker" "$CLI/src/platform/macos/appkit_host.h" 2>/dev/null; then
+marker_v2="Markdown default-handler claim (host patch v2)"
+# The v1 marker alone is not enough: a CLI patched by an older version
+# of this script carries the open-files delegate but not the v2
+# default-handler claim, so re-apply (the cp's below overwrite).
+if grep -q "$marker" "$CLI/src/platform/macos/appkit_host.h" 2>/dev/null && grep -q "$marker_v2" "$CLI/src/platform/macos/appkit_host.m" 2>/dev/null; then
   echo "native-sdk CLI already patched; nothing to do."
   exit 0
 fi
